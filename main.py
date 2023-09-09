@@ -1,13 +1,13 @@
 from typing import Annotated
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import HTMLResponse
+from contextlib import asynccontextmanager
 
-import json
 import random
 import string
-import pandas
 from ast import literal_eval
 import os
+import pickle
 
 
 import pandas as pd
@@ -30,24 +30,16 @@ from sklearn.cluster import AgglomerativeClustering
 from sklearn.decomposition import PCA
 
 
-#input: series
-#output: df cluster_id, inputs, label
-# survey = {id, name, [{question}, ]}
-# sessions = dict()
+surveys = []
+ready_surveys = dict()
 
 
 import torch
-from transformers import AutoModelForSequenceClassification
-from transformers import BertTokenizerFast
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-tokenizer = BertTokenizerFast.from_pretrained('blanchefort/rubert-base-cased-sentiment-rusentiment')
-model = AutoModelForSequenceClassification.from_pretrained('blanchefort/rubert-base-cased-sentiment-rusentiment', return_dict=True)
-
-
-ready_json = dict()
-surveys = []
-
-ready_surveys = {}
+model_checkpoint = 'cointegrated/rubert-tiny-sentiment-balanced'
+tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint)
 
 app = FastAPI()
 
@@ -68,10 +60,18 @@ def run_model(text_list: list):
     
     tf_idf = TfidfVectorizer(stop_words=all_stopwords)
     corpus_vec = tf_idf.fit_transform(corpus)
-    agg_clustering = AgglomerativeClustering(n_clusters=8)
+    if text_series.count() <= 50:
+         n = 3
+    elif text_series.count() <= 200:
+         n = 4
+    elif text_series.count() <= 350:
+         n = 5
+    else:
+         n = 6
+    agg_clustering = AgglomerativeClustering(n_clusters=n)
     clusters = agg_clustering.fit_predict(corpus_vec.toarray())
     # функция для определения топ 5 слов в кластере
-    def top_tfidf_words(cluster_label, tfidf_matrix, feature_names, top_n=5):
+    def top_tfidf_words(cluster_label, tfidf_matrix, feature_names, top_n=3):
         cluster_indices = np.where(clusters == cluster_label)[0]
         cluster_tfidf_scores = tfidf_matrix[cluster_indices].sum(axis=0).A1
         top_indices = np.argsort(cluster_tfidf_scores)[::-1][:top_n]
@@ -93,11 +93,29 @@ def run_model(text_list: list):
     
 
 def run_sentiment(text: str):
-    inputs = tokenizer(text, max_length=512, padding=True, truncation=True, return_tensors='pt')
-    outputs = model(**inputs)
-    predicted = torch.nn.functional.softmax(outputs.logits, dim=1)
-    predicted = torch.argmax(predicted, dim=1).numpy()
-    return int(predicted[0])
+    with torch.no_grad():
+        inputs = tokenizer(text, return_tensors='pt', truncation=True, padding=True).to(model.device)
+        proba = torch.sigmoid(model(**inputs).logits).cpu().numpy()[0]
+    
+    return model.config.id2label[proba.argmax()]
+
+
+@app.on_event("startup")
+async def startup_event():
+
+    global surveys
+    global ready_surveys
+    if os.path.exists("db.pickle"):
+        with open("db.pickle", mode="rb") as f:
+            surveys, ready_surveys = pickle.load(f)
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    global surveys
+    global ready_surveys
+    with open("db.pickle", mode="wb") as f:
+        pickle.dump([surveys, ready_surveys], f)
 
 
 @app.post("/upload_survey/")
@@ -111,9 +129,11 @@ async def upload_survey(file: Annotated[bytes, File()]):
 @app.post("/upload_question/{survey_id}")
 async def upload_question(survey_id: int, file: UploadFile):
     global surveys
+    global ready_surveys
     for sv in surveys:
         if sv["id"] == survey_id:
             sv["questoins"].append(literal_eval(file.decode('utf-8-sig')))
+    ready_surveys.pop(survey_id, None)
     return {"file_size": len(file)}
 
 
@@ -126,6 +146,10 @@ async def get_surveys():
 @app.get("/questions/{survey_id}")
 async def questions(survey_id: int, has_sentiment: bool = False):
     global surveys
+    global ready_surveys
+    if survey_id in ready_surveys:
+        if str(has_sentiment) in ready_surveys[survey_id]:
+            return ready_surveys[survey_id][str(has_sentiment)]
     questions = [] 
     ret = []
     for sv in surveys:
@@ -150,24 +174,5 @@ async def questions(survey_id: int, has_sentiment: bool = False):
                     j["tonality"] = run_sentiment(j["text"])
         ret.append({"name": question["question"],
                     "clusters": clusters})
-    ready_surveys.append({"id": survey_id, 
-                          "name": sv_name,
-                          "questions": ret})
+    ready_surveys[survey_id] = {str(has_sentiment): ret}
     return ret
-
-
-@app.get("/")
-async def main():
-    content = """
-<body>
-<form action="/upload_survey/" enctype="multipart/form-data" method="post">
-<input name="upload_survey" type="file" multiple>
-<input type="submit">
-</form>
-<form action="/uploadfiles/" enctype="multipart/form-data" method="post">
-<input name="files" type="file" multiple>
-<input type="submit">
-</form>
-</body>
-    """
-    return HTMLResponse(content=content)
