@@ -42,6 +42,8 @@ model_checkpoint = 'cointegrated/rubert-tiny-sentiment-balanced'
 tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
 model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint)
 
+app = FastAPI()
+
 origins = [
     "*"
 ]
@@ -52,8 +54,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-app = FastAPI()
 
 stopwords_russian = stopwords.words('russian')
 stopwords_english = stopwords.words('english')
