@@ -1,8 +1,9 @@
 from typing import Annotated
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import HTMLResponse
-from contextlib import asynccontextmanager
+from fastapi.middleware.cors import CORSMiddleware
 
+import json
 import random
 import string
 from ast import literal_eval
@@ -40,6 +41,17 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 model_checkpoint = 'cointegrated/rubert-tiny-sentiment-balanced'
 tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
 model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint)
+
+origins = [
+    "*"
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app = FastAPI()
 
